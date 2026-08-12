@@ -51,12 +51,16 @@ class RobotArmWindow(QWidget):
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.toggle_connection)
 
+        self.home_button = QPushButton("Home")
+        self.home_button.clicked.connect(self.set_home_position)
+
         self.disable_on_disconnect = QCheckBox("Disable all on disconnect")
         self.disable_on_disconnect.setChecked(True)
 
         serial_layout.addWidget(QLabel("Port"))
         serial_layout.addWidget(self.port_combo)
         serial_layout.addWidget(refresh_button)
+        serial_layout.addWidget(self.home_button)
         serial_layout.addWidget(self.connect_button)
         serial_layout.addWidget(self.disable_on_disconnect)
 
@@ -65,14 +69,28 @@ class RobotArmWindow(QWidget):
         # Column headers
         header = QHBoxLayout()
 
-        header.addWidget(QLabel("Servo"))
-        header.itemAt(0).widget().setMinimumWidth(100)
+        header_servo = QLabel("Servo")
+        header_servo.setMinimumWidth(100)
 
-        header.addWidget(QLabel("Left"))
-        header.addWidget(QLabel("Slider"))
-        header.addWidget(QLabel("Right"))
-        header.addWidget(QLabel("Value"))
-        header.addWidget(QLabel("Disable"))
+        header_left = QLabel("Left")
+        header_slider = QLabel("Slider")
+        header_right = QLabel("Right")
+        header_value = QLabel("Value")
+        header_disable = QLabel("Disable")
+
+        header_right.setMinimumWidth(55)
+        header_value.setMinimumWidth(35)
+        header_right.setAlignment(Qt.AlignCenter)
+        header_value.setAlignment(Qt.AlignCenter)
+        header_disable.setAlignment(Qt.AlignCenter)
+        header_slider.setAlignment(Qt.AlignCenter)
+
+        header.addWidget(header_servo, 0)
+        header.addWidget(header_left, 0)
+        header.addWidget(header_slider, 1)
+        header.addWidget(header_right, 0)
+        header.addWidget(header_value, 0)
+        header.addWidget(header_disable, 0)
 
         layout.addLayout(header)
 
@@ -117,6 +135,11 @@ class RobotArmWindow(QWidget):
             # Disable checkbox
             disable_check = QCheckBox("Disable")
             disable_check.setChecked(False)
+            if len(self.sliders) == 0:
+                header_left.setFixedWidth(left_limit.sizeHint().width())
+                header_right.setFixedWidth(right_limit.sizeHint().width())
+                header_value.setFixedWidth(value.sizeHint().width())
+                header_disable.setFixedWidth(disable_check.sizeHint().width())
 
             # Connections
             slider.valueChanged.connect(self.slider_changed)
@@ -134,12 +157,12 @@ class RobotArmWindow(QWidget):
             disable_check.stateChanged.connect(self.disable_changed)
 
             # Layout
-            row.addWidget(label)
-            row.addWidget(left_limit)
-            row.addWidget(slider)
-            row.addWidget(right_limit)
-            row.addWidget(value)
-            row.addWidget(disable_check)
+            row.addWidget(label, 0)
+            row.addWidget(left_limit, 0)
+            row.addWidget(slider, 1)
+            row.addWidget(right_limit, 0)
+            row.addWidget(value, 0)
+            row.addWidget(disable_check, 0)
 
             layout.addLayout(row)
 
@@ -349,6 +372,28 @@ class RobotArmWindow(QWidget):
         ):
             label.setText(str(slider.value()))
 
+        self.send_packet()
+
+    # -------------------------------------------------
+    def set_home_position(self):
+        """Move all servos to the predefined home position."""
+
+        home_position = [
+            90,   # Base
+            180,  # Shoulder
+            180,  # Elbow
+            100,  # Wrist Pitch
+            90,   # Wrist Roll
+            170,  # Gripper
+        ]
+
+        for slider, value in zip(self.sliders, home_position):
+            # Respect the configured servo limits
+            value = max(slider.minimum(), min(value, slider.maximum()))
+            slider.setValue(value)
+
+        # slider_changed() is triggered by the slider changes,
+        # but send once explicitly as well.
         self.send_packet()
 
     # -------------------------------------------------
