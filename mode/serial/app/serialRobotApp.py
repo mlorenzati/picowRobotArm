@@ -1,4 +1,6 @@
 import sys
+import json
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,15 +20,16 @@ from PySide6.QtCore import Qt
 import serial
 import serial.tools.list_ports
 
-
 class RobotArmWindow(QWidget):
-
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("Robot Arm Controller")
 
         self.serial = None
+
+        self.loading_config = True
+        self.config_file = Path(__file__).with_name("robot_arm_config.json")
 
         self.sliders = []
         self.value_labels = []
@@ -111,7 +114,6 @@ class RobotArmWindow(QWidget):
             value = QLabel("90")
             value.setMinimumWidth(35)
 
-
             # Disable checkbox
             disable_check = QCheckBox("Disable")
             disable_check.setChecked(False)
@@ -152,9 +154,102 @@ class RobotArmWindow(QWidget):
         layout.addWidget(self.status)
 
         self.setLayout(layout)
+        self.load_config()
+        self.loading_config = False
+
+    def closeEvent(self, event):
+        self.save_config()
+
+        if self.serial is not None:
+            self.serial.close()
+            self.serial = None
+
+        event.accept()
 
     # -------------------------------------------------
+    def save_config(self):
+        config = {
+            "port": self.port_combo.currentText(),
+            "disable_on_disconnect": self.disable_on_disconnect.isChecked(),
+            "servos": []
+        }
 
+        for slider, left, right, check in zip(
+            self.sliders,
+            self.left_limits,
+            self.right_limits,
+            self.disable_checks
+        ):
+            config["servos"].append({
+                "left": left.value(),
+                "right": right.value(),
+                "value": slider.value(),
+                "disabled": check.isChecked()
+            })
+
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump(config, f, indent=4)
+
+        except Exception as e:
+            self.status.setText(f"Config save error: {e}")
+
+    # -------------------------------------------------
+    def load_config(self):
+        if not self.config_file.exists():
+            return
+
+        try:
+            with open(self.config_file, "r") as f:
+                config = json.load(f)
+
+            # Serial port
+            saved_port = config.get("port", "")
+
+            if self.port_combo.findText(saved_port) >= 0:
+                self.port_combo.setCurrentText(saved_port)
+
+            # Disable on disconnect
+            self.disable_on_disconnect.setChecked(
+                config.get("disable_on_disconnect", True)
+            )
+
+            # Servo configuration
+            servos = config.get("servos", [])
+
+            for i, servo_config in enumerate(servos):
+
+                if i >= len(self.sliders):
+                    break
+
+                left = servo_config.get("left", 0)
+                right = servo_config.get("right", 180)
+                value = servo_config.get("value", 90)
+                disabled = servo_config.get("disabled", False)
+
+                # Keep configuration within valid servo limits
+                left = max(0, min(180, left))
+                right = max(0, min(180, right))
+
+                if left > right:
+                    left, right = right, left
+
+                value = max(left, min(value, right))
+
+                self.left_limits[i].setValue(left)
+                self.right_limits[i].setValue(right)
+
+                self.sliders[i].setRange(left, right)
+                self.sliders[i].setValue(value)
+
+                self.disable_checks[i].setChecked(disabled)
+
+                self._update_row_visual(i)
+
+        except Exception as e:
+            self.status.setText(f"Config load error: {e}")
+
+    # -------------------------------------------------
     def refresh_ports(self):
         current = self.port_combo.currentText()
 
@@ -169,10 +264,8 @@ class RobotArmWindow(QWidget):
             self.port_combo.setCurrentIndex(index)
 
     # -------------------------------------------------
-
     def toggle_connection(self):
         if self.serial is None:
-
             port = self.port_combo.currentText()
 
             if port == "":
@@ -240,7 +333,6 @@ class RobotArmWindow(QWidget):
         )
 
     # -------------------------------------------------
-
     def _update_row_visual(self, index):
         """Grey-out the slider when the servo is disabled."""
 
@@ -250,7 +342,6 @@ class RobotArmWindow(QWidget):
         self.value_labels[index].setEnabled(not disabled)
 
     # -------------------------------------------------
-
     def slider_changed(self):
         for slider, label in zip(
             self.sliders,
@@ -261,7 +352,6 @@ class RobotArmWindow(QWidget):
         self.send_packet()
 
     # -------------------------------------------------
-
     def disable_changed(self):
         """Called when any Disable checkbox changes state."""
 
@@ -271,7 +361,6 @@ class RobotArmWindow(QWidget):
         self.send_packet()
 
     # -------------------------------------------------
-
     def send_packet(self):
         if self.serial is None:
             return

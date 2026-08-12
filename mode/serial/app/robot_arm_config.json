@@ -1,0 +1,42 @@
+{
+    "port": "/dev/cu.usbmodem1401",
+    "disable_on_disconnect": true,
+    "servos": [
+        {
+            "left": 0,
+            "right": 180,
+            "value": 92,
+            "disabled": false
+        },
+        {
+            "left": 0,
+            "right": 180,
+            "value": 180,
+            "disabled": false
+        },
+        {
+            "left": 0,
+            "right": 180,
+            "value": 180,
+            "disabled": false
+        },
+        {
+            "left": 0,
+            "right": 180,
+            "value": 101,
+            "disabled": false
+        },
+        {
+            "left": 0,
+            "right": 180,
+            "value": 75,
+            "disabled": false
+        },
+        {
+            "left": 100,
+            "right": 180,
+            "value": 180,
+            "disabled": false
+        }
+    ]
+}
