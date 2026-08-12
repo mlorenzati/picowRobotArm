@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QComboBox,
+    QCheckBox,
     QHBoxLayout,
     QVBoxLayout,
 )
@@ -28,6 +29,7 @@ class RobotArmWindow(QWidget):
 
         self.sliders = []
         self.value_labels = []
+        self.disable_checks = []   # one QCheckBox per servo channel
 
         layout = QVBoxLayout()
 
@@ -46,15 +48,19 @@ class RobotArmWindow(QWidget):
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.toggle_connection)
 
+        self.disable_on_disconnect = QCheckBox("Disable all on disconnect")
+        self.disable_on_disconnect.setChecked(True)
+
         serial_layout.addWidget(QLabel("Port"))
         serial_layout.addWidget(self.port_combo)
         serial_layout.addWidget(refresh_button)
         serial_layout.addWidget(self.connect_button)
+        serial_layout.addWidget(self.disable_on_disconnect)
 
         layout.addLayout(serial_layout)
 
         #
-        # Sliders
+        # Sliders + disable checkboxes
         #
 
         names = [
@@ -81,14 +87,20 @@ class RobotArmWindow(QWidget):
             value = QLabel("90")
             value.setMinimumWidth(35)
 
+            disable_check = QCheckBox("Disable")
+            disable_check.setChecked(False)
+            disable_check.stateChanged.connect(self.disable_changed)
+
             row.addWidget(label)
             row.addWidget(slider)
             row.addWidget(value)
+            row.addWidget(disable_check)
 
             layout.addLayout(row)
 
             self.sliders.append(slider)
             self.value_labels.append(value)
+            self.disable_checks.append(disable_check)
 
         self.status = QLabel("Disconnected")
 
@@ -142,6 +154,16 @@ class RobotArmWindow(QWidget):
 
         else:
 
+            if self.disable_on_disconnect.isChecked():
+                # Send all-disable packet before closing so the firmware
+                # calls deinit() on every servo (no PWM signal left active)
+                try:
+                    packet = " ".join(["D"] * len(self.sliders)) + "\n"
+                    self.serial.write(packet.encode("ascii"))
+                    self.serial.flush()
+                except Exception:
+                    pass
+
             self.serial.close()
             self.serial = None
 
@@ -150,10 +172,27 @@ class RobotArmWindow(QWidget):
 
     # -------------------------------------------------
 
+    def _update_row_visual(self, index):
+        """Grey-out the slider when the servo is disabled."""
+        disabled = self.disable_checks[index].isChecked()
+        self.sliders[index].setEnabled(not disabled)
+        self.value_labels[index].setEnabled(not disabled)
+
+    # -------------------------------------------------
+
     def slider_changed(self):
 
-        for slider, label in zip(self.sliders, self.value_labels):
+        for i, (slider, label) in enumerate(zip(self.sliders, self.value_labels)):
             label.setText(str(slider.value()))
+
+        self.send_packet()
+
+    # -------------------------------------------------
+
+    def disable_changed(self):
+        """Called when any Disable checkbox changes state."""
+        for i in range(len(self.disable_checks)):
+            self._update_row_visual(i)
 
         self.send_packet()
 
@@ -164,9 +203,14 @@ class RobotArmWindow(QWidget):
         if self.serial is None:
             return
 
-        values = [str(s.value()) for s in self.sliders]
+        tokens = []
+        for slider, check in zip(self.sliders, self.disable_checks):
+            if check.isChecked():
+                tokens.append("D")
+            else:
+                tokens.append(str(slider.value()))
 
-        packet = " ".join(values) + "\n"
+        packet = " ".join(tokens) + "\n"
 
         try:
             self.serial.write(packet.encode("ascii"))
@@ -179,7 +223,7 @@ class RobotArmWindow(QWidget):
 app = QApplication(sys.argv)
 
 window = RobotArmWindow()
-window.resize(600, 350)
+window.resize(680, 380)
 window.show()
 
 sys.exit(app.exec())
