@@ -11,6 +11,7 @@ import cv2
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QFileDialog, QComboBox, QGroupBox, QFormLayout,
     QApplication,
     QWidget,
     QLabel,
@@ -43,6 +44,9 @@ state = {
     "running": True,
     "error": None,
     "fps": 0.0,
+    "source": {"type": "camera", "value": 0},
+    "source_name": "Camera 0",
+    "hand_robot": None,
 }
 
 
@@ -57,6 +61,16 @@ class TeleopWindow(QWidget):
         self.video_label = QLabel("Waiting for camera...")
         self.video_label.setMinimumSize(720, 480)
         self.video_label.setAlignment(Qt.AlignCenter)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Input:"))
+        self.source_combo = QComboBox()
+        self.refresh_sources()
+        self.source_combo.currentIndexChanged.connect(self.source_changed)
+        source_row.addWidget(self.source_combo, 1)
+        self.video_button = QPushButton("Open Video...")
+        self.video_button.clicked.connect(self.open_video)
+        source_row.addWidget(self.video_button)
 
         names = [
             "Base", "Shoulder", "Elbow",
@@ -75,6 +89,20 @@ class TeleopWindow(QWidget):
             joint_layout.addWidget(value_label, row, 1)
             self.joint_values.append(value_label)
 
+        diagnostic_box = QGroupBox("Hand2RobotWorld / Mapping Diagnostics")
+        diagnostic_layout = QFormLayout()
+        self.h2r_position = QLabel("---")
+        self.h2r_orientation = QLabel("---")
+        self.raw_values = QLabel("---")
+        self.neutral_delta = QLabel("---")
+        self.neutral_values = QLabel("---")
+        diagnostic_layout.addRow("H2R position X/Y/Z", self.h2r_position)
+        diagnostic_layout.addRow("H2R orientation R/P/Y", self.h2r_orientation)
+        diagnostic_layout.addRow("Raw human angles", self.raw_values)
+        diagnostic_layout.addRow("Neutral human", self.neutral_values)
+        diagnostic_layout.addRow("Neutral delta", self.neutral_delta)
+        diagnostic_box.setLayout(diagnostic_layout)
+
         self.calibrate_button = QPushButton("Calibrate Neutral")
         self.calibrate_button.clicked.connect(self.calibrate_clicked)
 
@@ -89,7 +117,9 @@ class TeleopWindow(QWidget):
 
         layout = QVBoxLayout()
         layout.addWidget(self.video_label)
+        layout.addLayout(source_row)
         layout.addLayout(joint_layout)
+        layout.addWidget(diagnostic_box)
         layout.addLayout(button_layout)
         layout.addWidget(self.status_label)
         self.setLayout(layout)
@@ -97,6 +127,44 @@ class TeleopWindow(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gui)
         self.timer.start(50)
+
+    def refresh_sources(self):
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        for index in range(8):
+            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY)
+            if cap.isOpened():
+                self.source_combo.addItem(f"Camera {index}", {"type": "camera", "value": index})
+            cap.release()
+        if self.source_combo.count() == 0:
+            self.source_combo.addItem("Camera 0 (not detected)", {"type": "camera", "value": 0})
+        self.source_combo.blockSignals(False)
+
+    def source_changed(self, index):
+        source = self.source_combo.itemData(index)
+        if source:
+            state["source"] = source
+            state["source_name"] = (
+                f"Video: {source['value']}" if source["type"] == "video"
+                else f"Camera {source['value']}"
+            )
+            self.mapper.reset_home()
+            state["angles"] = HOME.copy()
+
+    def open_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select video",
+            "",
+            "Video files (*.mp4 *.mov *.avi *.mkv *.m4v);;All files (*)",
+        )
+        if not path:
+            return
+        self.source_combo.blockSignals(True)
+        self.source_combo.addItem(f"Video: {Path(path).name}", {"type": "video", "value": path})
+        self.source_combo.setCurrentIndex(self.source_combo.count() - 1)
+        self.source_combo.blockSignals(False)
+        self.source_changed(self.source_combo.currentIndex())
 
     def calibrate_clicked(self):
         if not state["pose_ok"] or state["human_angles"] is None:
@@ -181,7 +249,7 @@ class TeleopWindow(QWidget):
         hand = "HAND OK" if state["hand_ok"] else "HAND ---"
         self.status_label.setText(
             f"POSE OK | {hand} | CALIBRATED | "
-            f"FPS {state['fps']:.1f} | ZMQ :5555"
+            f"{state.get('source_name', 'Source')} | FPS {state['fps']:.1f} | ZMQ :5555"
         )
 
 

@@ -112,22 +112,30 @@ def calculate_arm_angles(landmarks, hand_world=None) -> np.ndarray:
     # --------------------------------------------------------
     # BASE
     # --------------------------------------------------------
-    # 90 = arm centered on torso-forward reference.
-    # Positive/negative values represent horizontal rotation.
+    # 90 = arm toward the camera / torso forward.
+    # 0  = arm to the person's left.
+    # 180 = arm to the person's right.
+    #
+    # The raw torso normal from X(right) x Y(up) points away from the
+    # camera in MediaPipe world coordinates, so negate it to obtain the
+    # camera-facing torso-forward direction.
     arm_horizontal = _project_horizontal(upper_dir)
-    torso_forward = _project_horizontal(body_z)
+    torso_forward = _project_horizontal(-body_z)
 
     if (
         np.linalg.norm(arm_horizontal) < 0.1
         or np.linalg.norm(torso_forward) < 0.1
     ):
-        base_angle = 0.0
+        base_angle = 90.0
     else:
-        base_angle = signed_angle(
+        signed = signed_angle(
             torso_forward,
             arm_horizontal,
             np.array([0.0, 1.0, 0.0]),
         )
+        # In this coordinate system left produces +90 and right -90.
+        base_angle = 90.0 - signed
+        base_angle = float(np.clip(base_angle, 0.0, 180.0))
 
     # --------------------------------------------------------
     # SHOULDER
@@ -208,13 +216,12 @@ def calculate_arm_angles(landmarks, hand_world=None) -> np.ndarray:
 
 def finger_extension(hand, mcp, pip, dip, tip) -> float:
     """Return a 0..1 extension score for one finger."""
-    p_wrist = landmark_vector(hand[H_WRIST])
     p_mcp = landmark_vector(hand[mcp])
     p_pip = landmark_vector(hand[pip])
     p_dip = landmark_vector(hand[dip])
     p_tip = landmark_vector(hand[tip])
 
-    pip_angle = angle_between(p_mcp - p_pip, p_wrist - p_pip)
+    pip_angle = angle_between(p_mcp - p_pip, p_dip - p_pip)
     dip_angle = angle_between(p_pip - p_dip, p_tip - p_dip)
 
     # A straight finger is approximately 180 + 180.
@@ -239,4 +246,8 @@ def calculate_gripper(hand) -> float | None:
         for finger in fingers
     ]
 
-    return float(np.clip(np.mean(extensions), 0.0, 1.0))
+    extension = float(np.clip(np.mean(extensions), 0.0, 1.0))
+
+    # Requested robot convention: open hand = 100, closed fist = 180.
+    closure = 1.0 - extension
+    return float(100.0 + closure * 80.0)

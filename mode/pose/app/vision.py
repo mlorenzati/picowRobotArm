@@ -14,6 +14,7 @@ import cv2
 import mediapipe as mp
 
 from arm_geometry import calculate_arm_angles, calculate_gripper
+from hand_robot_world import hand2robotworld
 
 CAMERA_INDEX = 0
 CAMERA_BACKEND = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
@@ -147,10 +148,25 @@ class VisionProcessor:
         pose_landmarker = vision.PoseLandmarker.create_from_options(pose_options)
         hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
 
-        print(f"Opening camera {CAMERA_INDEX}...")
-        cap = cv2.VideoCapture(CAMERA_INDEX, CAMERA_BACKEND)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        source = self.state.get("source", {"type": "camera", "value": CAMERA_INDEX})
+        cap = None
+        cap_source = None
+
+        def open_source(src):
+            if src["type"] == "video":
+                path = src["value"]
+                print(f"Opening video {path}...")
+                handle = cv2.VideoCapture(path)
+            else:
+                index = int(src["value"])
+                print(f"Opening camera {index}...")
+                handle = cv2.VideoCapture(index, CAMERA_BACKEND)
+                handle.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                handle.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+            return handle
+
+        cap = open_source(source)
+        cap_source = (source["type"], str(source["value"]))
 
         if not cap.isOpened():
             self.state["error"] = "Could not open camera"
@@ -169,8 +185,32 @@ class VisionProcessor:
 
         try:
             while self.state["running"]:
+                requested = self.state.get("source", source)
+                requested_key = (requested["type"], str(requested["value"]))
+                if requested_key != cap_source:
+                    if cap is not None:
+                        cap.release()
+                    cap = open_source(requested)
+                    cap_source = requested_key
+                    self.state["camera_ok"] = cap.isOpened()
+                    self.state["source_name"] = (
+                        f"Video: {requested['value']}" if requested["type"] == "video"
+                        else f"Camera {requested['value']}"
+                    )
+                    if not cap.isOpened():
+                        self.state["error"] = f"Could not open {self.state['source_name']}"
+                        time.sleep(0.1)
+                        continue
+                    self.state["error"] = None
+                    start_time = time.monotonic()
+                    source = requested
+
                 ret, frame = cap.read()
                 if not ret:
+                    if source.get("type") == "video":
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        start_time = time.monotonic()
+                        continue
                     time.sleep(0.02)
                     continue
 
@@ -217,6 +257,9 @@ class VisionProcessor:
                         landmarks, hand_world
                     )
 
+                    hand_robot = hand2robotworld(hand_result.hand_landmarks[0] if hand_result.hand_landmarks else None, hand_world)
+                    self.state["hand_robot"] = hand_robot
+
                     gripper = calculate_gripper(hand_world)
                     if gripper is None:
                         gripper = last_gripper
@@ -251,6 +294,38 @@ class VisionProcessor:
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
                         (0, 255, 0),
+                        2,
+                    )
+
+                cv2.putText(
+                    frame,
+                    self.state.get("source_name", "Source"),
+                    (10, 275),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    2,
+                )
+
+                hand_robot = self.state.get("hand_robot")
+                if hand_robot is not None:
+                    pos = hand_robot["position"]
+                    cv2.putText(
+                        frame,
+                        f"H2R POS: {pos[0]:+.2f} {pos[1]:+.2f} {pos[2]:+.2f}",
+                        (10, 300),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        frame,
+                        f"H2R RPY: {hand_robot['roll']:+.0f} {hand_robot['pitch']:+.0f} {hand_robot['yaw']:+.0f}",
+                        (10, 322),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
                         2,
                     )
 

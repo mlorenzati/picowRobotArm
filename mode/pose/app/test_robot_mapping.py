@@ -6,7 +6,7 @@ def test_neutral_maps_to_home():
     mapper = RobotMapper()
     human = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
     assert mapper.calibrate(human, 0.5)
-    np.testing.assert_allclose(mapper.map(human, 0.5), HOME)
+    np.testing.assert_allclose(mapper.map(human, 100.0), HOME)
 
 
 def test_arm_mapping_uses_first_five_ranges():
@@ -21,7 +21,7 @@ def test_arm_mapping_uses_first_five_ranges():
 def test_gripper_is_scalar_mapping():
     mapper = RobotMapper()
     human = np.zeros(5)
-    mapper.calibrate(human, 1.0)
-    result = mapper.map(human, 0.0)
+    mapper.calibrate(human, 100.0)
+    result = mapper.map(human, 180.0)
     assert result.shape == (6,)
     assert result[5] == 180.0

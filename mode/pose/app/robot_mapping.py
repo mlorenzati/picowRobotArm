@@ -93,21 +93,10 @@ class RobotMapper:
             + normalized * 90.0 * SENSITIVITY[:5] * DIRECTION[:5]
         )
 
-        # Gripper is intentionally mapped independently from the arm joints.
-        # Neutral hand openness becomes servo 100.
-        if gripper is not None and self.neutral_gripper is not None:
-            gripper_delta = float(gripper) - self.neutral_gripper
-
-            # Hand openness: +1 means more open. Robot convention:
-            # 100 = open neutral, 180 = closed. Therefore increasing
-            # closure requires the opposite direction of openness.
-            robot[5] = (
-                HOME[5]
-                - gripper_delta
-                * SENSITIVITY[5]
-                * DIRECTION[5]
-                * 80.0
-            )
+        # Gripper is already in the requested robot convention:
+        # open=100, closed=180. Do not apply neutral-relative mapping here.
+        if gripper is not None:
+            robot[5] = float(gripper)
 
         return np.clip(robot, SERVO_MIN, SERVO_MAX)
 

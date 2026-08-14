@@ -1,0 +1,6 @@
+numpy
+opencv-python
+mediapipe
+PySide6
+pyzmq
+transforms3d
