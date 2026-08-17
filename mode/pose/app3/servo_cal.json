@@ -1,0 +1,11 @@
+{
+    "_comment": "Calibration for SerialBridge. Formula: servo_out = clamp(offset + scale * raw_angle, min, max)",
+    "servos": [
+        {"name": "Base",        "offset":  92, "scale":  1.0, "min":   0, "max": 180},
+        {"name": "Shoulder",    "offset": 180, "scale": -1.0, "min":   0, "max": 180},
+        {"name": "Elbow",       "offset": 180, "scale": -1.0, "min":   0, "max": 180},
+        {"name": "Wrist Pitch", "offset": 101, "scale":  1.0, "min":   0, "max": 180},
+        {"name": "Wrist Roll",  "offset":  75, "scale":  1.0, "min":   0, "max": 180},
+        {"name": "Gripper",     "offset":   0, "scale":  1.0, "min": 100, "max": 180}
+    ]
+}
