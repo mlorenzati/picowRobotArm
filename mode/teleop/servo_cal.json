@@ -11,20 +11,19 @@
         {
             "name": "Shoulder",
             "offset": 180.0,
-            "scale": -1.1500000000000001,
+            "scale": -1.2,
             "min": 0,
             "max": 180
         },
         {
             "name": "Elbow",
-            "offset": 180.0,
-            "scale": -1.0,
+            "offset": 0.0,
+            "scale": 1.0,
             "min": 0,
             "max": 180
         },
         {
             "name": "Wrist Pitch",
-            "_note": "raw=90 is neutral (wrist straight). offset=180/scale=-1.0 maps neutral→90°, bent-up>90→servo<90, bent-down<90→servo>90.",
             "offset": 180.0,
             "scale": -1.0,
             "min": 0,

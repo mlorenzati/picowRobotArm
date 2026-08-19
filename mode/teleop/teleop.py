@@ -346,6 +346,7 @@ def _make_state(force_webcam: bool = False):
         "error":            None,
         # Set by CameraPanel / QSettings, read by VisionThread before cam init
         "force_webcam":     force_webcam,
+        "webcam_index":     0,           # set by CameraPanel, used by VisionThread
         "camera_type":      "unknown",   # filled by VisionThread after init
     }
 
@@ -373,11 +374,13 @@ class VisionThread:
         # state["force_webcam"] can be set at runtime by the CameraPanel;
         # args.force_webcam is the command-line fallback.
         force_webcam = state.get("force_webcam", args.force_webcam)
+        webcam_index = int(state.get("webcam_index", 0))
         cam = depthai_cam.DepthAICam(
             width=args.oakd_capture_width, height=args.oakd_capture_height)
         if force_webcam or not cam.is_depthai_device_available():
-            print("No DepthAI device — falling back to webcam.")
+            print(f"Using webcam index {webcam_index}.")
             cam = opencv_cam.OpenCVCam(
+                cam_id=webcam_index,
                 width=args.webcam_capture_width,
                 height=args.webcam_capture_height)
         state["camera_type"] = "webcam" if isinstance(cam, opencv_cam.OpenCVCam) else "depthai"
@@ -1075,11 +1078,16 @@ class CalibrationPanel(QGroupBox):
 # ---------------------------------------------------------------------------
 
 class CameraPanel(QWidget):
-    """Panel for selecting the camera source (DepthAI OAK-D or webcam).
+    """Panel for selecting the camera source and webcam index.
 
-    The selected camera type is persisted to QSettings and applied on the
-    next vision thread start.  A status label reflects the camera currently
-    active (filled by VisionThread via state["camera_type"]).
+    Primary control: webcam index spinner (0-9).  A checkbox switches to
+    DepthAI OAK-D mode instead.  Both settings are persisted to QSettings
+    and applied when VisionThread starts (restart required to take effect).
+
+    State keys written:
+        state["force_webcam"]  – True = use OpenCV webcam, False = try OAK-D
+        state["webcam_index"]  – integer camera index for OpenCVCam
+        state["camera_type"]   – "webcam" or "depthai" (set by VisionThread)
     """
 
     def __init__(self, state: dict, parent=None):
@@ -1089,24 +1097,40 @@ class CameraPanel(QWidget):
 
     def _build(self):
         vl = QVBoxLayout(self)
-        vl.setContentsMargins(6, 6, 6, 6)
+        vl.setContentsMargins(8, 8, 8, 8)
+        vl.setSpacing(6)
 
-        # Camera type selector
-        sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("Camera source:"))
+        # ---- Webcam index row (primary) ----
+        wc_row = QHBoxLayout()
+        self._webcam_rb = QCheckBox("Webcam index:")
+        self._webcam_rb.setToolTip(
+            "Use an OpenCV webcam. Choose the camera index (0 = first, 1 = second, …).")
+        self._cam_index_spin = QSpinBox()
+        self._cam_index_spin.setRange(0, 9)
+        self._cam_index_spin.setValue(0)
+        self._cam_index_spin.setFixedWidth(55)
+        self._cam_index_spin.setToolTip("Camera device index (0-9)")
+        wc_row.addWidget(self._webcam_rb)
+        wc_row.addWidget(self._cam_index_spin)
+        wc_row.addStretch()
+        vl.addLayout(wc_row)
 
-        self._cam_combo = QComboBox()
-        self._cam_combo.addItem("Auto (DepthAI → Webcam fallback)", "auto")
-        self._cam_combo.addItem("Force Webcam (OpenCV)", "webcam")
-        self._cam_combo.addItem("Force DepthAI OAK-D",  "depthai")
-        self._cam_combo.setMinimumWidth(240)
-        sel_row.addWidget(self._cam_combo, 1)
-        sel_row.addStretch()
-        vl.addLayout(sel_row)
+        # ---- DepthAI row (secondary) ----
+        dai_row = QHBoxLayout()
+        self._depthai_rb = QCheckBox("DepthAI OAK-D (auto-detect)")
+        self._depthai_rb.setToolTip(
+            "Use a DepthAI OAK-D camera. Falls back to webcam index 0 if not found.")
+        dai_row.addWidget(self._depthai_rb)
+        dai_row.addStretch()
+        vl.addLayout(dai_row)
+
+        # Make the two checkboxes mutually exclusive
+        # (signals connected in load_settings after initial values are set)
+        self._webcam_rb.setChecked(True)   # webcam is default / priority
 
         info = QLabel(
-            "Note: camera is initialised once at startup.\n"
-            "Change the setting and restart to switch camera.")
+            "⚠ Camera is initialised once at startup.\n"
+            "  Change the setting here, then restart the app.")
         info.setStyleSheet("color: #888; font-size: 10px;")
         vl.addWidget(info)
 
@@ -1116,29 +1140,86 @@ class CameraPanel(QWidget):
 
         vl.addStretch()
 
-    def load_settings(self, settings: QSettings):
-        """Restore the last-saved camera selection and apply it to state."""
-        val = settings.value(_KEY_CAMERA, "auto")
-        idx = self._cam_combo.findData(val)
-        if idx >= 0:
-            self._cam_combo.setCurrentIndex(idx)
+    # ------------------------------------------------------------------
+    def _on_webcam_toggled(self, checked: bool):
+        if checked:
+            self._depthai_rb.blockSignals(True)
+            self._depthai_rb.setChecked(False)
+            self._depthai_rb.blockSignals(False)
+            self._cam_index_spin.setEnabled(True)
         self._apply_to_state()
-        self._cam_combo.currentIndexChanged.connect(self._on_changed)
 
-    def save_settings(self, settings: QSettings):
-        settings.setValue(_KEY_CAMERA, self._cam_combo.currentData())
+    def _on_depthai_toggled(self, checked: bool):
+        if checked:
+            self._webcam_rb.blockSignals(True)
+            self._webcam_rb.setChecked(False)
+            self._webcam_rb.blockSignals(False)
+            self._cam_index_spin.setEnabled(False)
+        else:
+            # Neither checked → default back to webcam
+            self._webcam_rb.blockSignals(True)
+            self._webcam_rb.setChecked(True)
+            self._webcam_rb.blockSignals(False)
+            self._cam_index_spin.setEnabled(True)
+        self._apply_to_state()
 
-    def _on_changed(self, _idx: int):
+    def _on_index_changed(self, _val: int):
         self._apply_to_state()
 
     def _apply_to_state(self):
-        val = self._cam_combo.currentData()
-        self._state["force_webcam"] = (val == "webcam")
-        # "depthai" mode: force_webcam=False, and the cam will fail if absent
+        use_depthai = self._depthai_rb.isChecked()
+        self._state["force_webcam"]  = not use_depthai
+        self._state["webcam_index"]  = self._cam_index_spin.value()
+
+    # ------------------------------------------------------------------
+    def load_settings(self, settings: QSettings):
+        """Restore saved camera settings, apply to state, then connect live signals."""
+        cam_type = settings.value(_KEY_CAMERA, "webcam")
+        cam_idx  = int(settings.value(_KEY_CAM_INDEX, 0))
+
+        # Block all signals while setting initial values so mutual-exclusion
+        # handlers don't fire prematurely.
+        self._cam_index_spin.blockSignals(True)
+        self._webcam_rb.blockSignals(True)
+        self._depthai_rb.blockSignals(True)
+
+        self._cam_index_spin.setValue(cam_idx)
+        if cam_type == "depthai":
+            self._depthai_rb.setChecked(True)
+            self._webcam_rb.setChecked(False)
+            self._cam_index_spin.setEnabled(False)
+        else:
+            # Webcam is the default/priority option — always enable spinner
+            self._webcam_rb.setChecked(True)
+            self._depthai_rb.setChecked(False)
+            self._cam_index_spin.setEnabled(True)
+
+        self._cam_index_spin.blockSignals(False)
+        self._webcam_rb.blockSignals(False)
+        self._depthai_rb.blockSignals(False)
+
+        self._apply_to_state()
+
+        # Connect live signals AFTER initial values are set, using the full
+        # mutual-exclusion handlers (not bare _apply_to_state) so that
+        # toggling one checkbox correctly unchecks the other and
+        # enables/disables the index spinner.
+        self._webcam_rb.toggled.connect(self._on_webcam_toggled)
+        self._depthai_rb.toggled.connect(self._on_depthai_toggled)
+        self._cam_index_spin.valueChanged.connect(self._on_index_changed)
+
+    def save_settings(self, settings: QSettings):
+        cam_type = "depthai" if self._depthai_rb.isChecked() else "webcam"
+        settings.setValue(_KEY_CAMERA,    cam_type)
+        settings.setValue(_KEY_CAM_INDEX, self._cam_index_spin.value())
 
     def refresh_status(self):
         cam_type = self._state.get("camera_type", "unknown")
-        self._active_lbl.setText(f"Active camera: {cam_type}")
+        idx      = self._state.get("webcam_index", 0)
+        if cam_type == "webcam":
+            self._active_lbl.setText(f"Active camera: webcam #{idx}")
+        else:
+            self._active_lbl.setText(f"Active camera: {cam_type}")
 
 
 # ---------------------------------------------------------------------------
@@ -1174,9 +1255,10 @@ def _make_dock(title: str, widget: QWidget, object_name: str,
 
 _SETTINGS_ORG  = "picowRobotArm"
 _SETTINGS_APP  = "teleop_app3"
-_KEY_GEOMETRY  = "mainWindow/geometry"
-_KEY_STATE     = "mainWindow/dockState"
-_KEY_CAMERA    = "camera/type"   # "depthai" or "webcam"
+_KEY_GEOMETRY   = "mainWindow/geometry"
+_KEY_STATE      = "mainWindow/dockState"
+_KEY_CAMERA     = "camera/type"         # "auto", "webcam", or "depthai"
+_KEY_CAM_INDEX  = "camera/webcam_index" # integer 0-9
 
 
 class TeleopWindow(QMainWindow):
@@ -1482,6 +1564,15 @@ def main():
     args   = parse_args()
     state  = _make_state()
     bridge = SerialBridge()
+
+    # Pre-load saved camera settings into state BEFORE starting VisionThread,
+    # so the thread opens the right camera index from the very first frame.
+    _s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    _cam_type = _s.value(_KEY_CAMERA, "webcam")
+    _cam_idx  = int(_s.value(_KEY_CAM_INDEX, 0))
+    state["force_webcam"] = (_cam_type != "depthai") or args.force_webcam
+    state["webcam_index"] = _cam_idx
+
     vision = VisionThread(state, args, bridge)
 
     thread = threading.Thread(target=vision.run, daemon=True, name="VisionThread")
