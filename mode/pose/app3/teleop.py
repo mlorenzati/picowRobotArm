@@ -47,10 +47,11 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QSettings, QByteArray
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QMainWindow,
     QWidget,
     QLabel,
     QGroupBox,
@@ -64,6 +65,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QScrollArea,
     QFrame,
+    QDockWidget,
+    QSizePolicy,
 )
 
 # ---------------------------------------------------------------------------
@@ -1007,39 +1010,131 @@ class CalibrationPanel(QGroupBox):
 
 
 # ---------------------------------------------------------------------------
-# Main window
+# Helper: make a scrollable dock content widget
 # ---------------------------------------------------------------------------
 
-class TeleopWindow(QWidget):
+def _make_scroll(widget: QWidget) -> QScrollArea:
+    """Wrap a widget in a QScrollArea so it never forces the window to grow."""
+    scroll = QScrollArea()
+    scroll.setWidget(widget)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    return scroll
+
+
+def _make_dock(title: str, widget: QWidget, object_name: str,
+               parent: "TeleopWindow") -> QDockWidget:
+    dock = QDockWidget(title, parent)
+    dock.setObjectName(object_name)
+    dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+    dock.setFeatures(
+        QDockWidget.DockWidgetMovable
+        | QDockWidget.DockWidgetFloatable
+        | QDockWidget.DockWidgetClosable
+    )
+    dock.setWidget(widget)
+    return dock
+
+
+# ---------------------------------------------------------------------------
+# Main window  (QMainWindow with dockable panels)
+# ---------------------------------------------------------------------------
+
+_SETTINGS_ORG  = "picowRobotArm"
+_SETTINGS_APP  = "teleop_app3"
+_KEY_GEOMETRY  = "mainWindow/geometry"
+_KEY_STATE     = "mainWindow/dockState"
+
+
+class TeleopWindow(QMainWindow):
+    """Main application window.
+
+    Each panel lives in a QDockWidget so it can be:
+      - dragged to any edge (left / right / top / bottom)
+      - floated as an independent window
+      - closed and re-opened via the View menu
+      - stacked / tabified with other docks
+
+    Layout (geometry + dock positions) is saved to QSettings on close and
+    restored on the next launch.
+    """
 
     def __init__(self, state: dict, bridge: SerialBridge):
         super().__init__()
         self._state  = state
         self._bridge = bridge
         self.setWindowTitle("MediaPipe 6DOF Robot Teleoperation (app3)")
-        self.resize(1280, 860)
+        self.setDockOptions(
+            QMainWindow.AllowTabbedDocks
+            | QMainWindow.AllowNestedDocks
+            | QMainWindow.AnimatedDocks
+        )
         self._build_ui()
+        self._restore_layout()
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
-        self._timer.start(50)   # 20 Hz
+        self._timer.start(50)   # 20 Hz UI refresh
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-
-        # ---- Top: camera + 3 planar views ----
-        top = QHBoxLayout()
-
-        # Left: camera
-        left = QVBoxLayout()
+        # ---- Central widget: camera feed ----
         self._cam_label = QLabel("Waiting for camera…")
-        self._cam_label.setMinimumSize(640, 420)
+        self._cam_label.setMinimumSize(480, 320)
         self._cam_label.setAlignment(Qt.AlignCenter)
         self._cam_label.setStyleSheet("background:#111; color:#888;")
-        left.addWidget(self._cam_label, 3)
+        self._cam_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setCentralWidget(self._cam_label)
 
-        # Joint readout
-        joint_box = QGroupBox("Joint Angles")
-        jl = QGridLayout()
+        # ---- Status bar ----
+        self._status_lbl = QLabel("Starting…")
+        self.statusBar().addWidget(self._status_lbl, 1)
+
+        # ---- Dock: Joint Angles ----
+        self._dock_joints  = self._build_joint_dock()
+        self.addDockWidget(Qt.RightDockWidgetArea, self._dock_joints)
+
+        # ---- Dock: Plane Views (XY / XZ / YZ) ----
+        self._dock_planes  = self._build_planes_dock()
+        self.addDockWidget(Qt.RightDockWidgetArea, self._dock_planes)
+
+        # ---- Dock: Serial Bridge ----
+        self._serial_panel = SerialPanel(self._bridge)
+        dock_serial = _make_dock("Serial Bridge", self._serial_panel,
+                                 "dock_serial", self)
+        self._dock_serial  = dock_serial
+        self.addDockWidget(Qt.BottomDockWidgetArea, dock_serial)
+
+        # ---- Dock: Servo Calibration ----
+        self._cal_panel = CalibrationPanel(self._bridge)
+        cal_scroll      = _make_scroll(self._cal_panel)
+        dock_cal = _make_dock("Servo Calibration", cal_scroll,
+                              "dock_cal", self)
+        self._dock_cal = dock_cal
+        self.addDockWidget(Qt.BottomDockWidgetArea, dock_cal)
+
+        # Tabify the two bottom docks by default (saves vertical space)
+        self.tabifyDockWidget(dock_serial, dock_cal)
+        dock_serial.raise_()   # Serial tab active by default
+
+        # ---- View menu (toggle visibility) ----
+        view_menu = self.menuBar().addMenu("&View")
+        for dock in (self._dock_joints, self._dock_planes,
+                     self._dock_serial, self._dock_cal):
+            view_menu.addAction(dock.toggleViewAction())
+
+        view_menu.addSeparator()
+        reset_act = view_menu.addAction("Reset Layout")
+        reset_act.triggered.connect(self._reset_layout)
+
+    def _build_joint_dock(self) -> QDockWidget:
+        box = QWidget()
+        gl  = QGridLayout(box)
+        gl.setContentsMargins(6, 6, 6, 6)
+
         field_defs = [
             ("Shoulder Yaw",   "shoulder_yaw"),
             ("Shoulder Pitch", "shoulder_pitch"),
@@ -1050,49 +1145,87 @@ class TeleopWindow(QWidget):
         ]
         self._joint_labels: dict[str, QLabel] = {}
         for row, (label, key) in enumerate(field_defs):
-            jl.addWidget(QLabel(label + ":"), row, 0)
+            gl.addWidget(QLabel(label + ":"), row, 0)
             lbl = QLabel("---")
             lbl.setMinimumWidth(80)
-            jl.addWidget(lbl, row, 1)
+            gl.addWidget(lbl, row, 1)
             self._joint_labels[key] = lbl
 
         n = len(field_defs)
-        jl.addWidget(QLabel("Gripper State:"), n, 0)
+        gl.addWidget(QLabel("Gripper State:"), n, 0)
         self._gripper_state_lbl = QLabel("---")
-        jl.addWidget(self._gripper_state_lbl, n, 1)
-        jl.addWidget(QLabel("Pitch Mode:"), n+1, 0)
+        gl.addWidget(self._gripper_state_lbl, n, 1)
+
+        gl.addWidget(QLabel("Pitch Mode:"), n+1, 0)
         self._pitchmode_lbl = QLabel("---")
-        jl.addWidget(self._pitchmode_lbl, n+1, 1)
-        joint_box.setLayout(jl)
-        left.addWidget(joint_box, 1)
+        gl.addWidget(self._pitchmode_lbl, n+1, 1)
 
-        self._status_lbl = QLabel("Starting…")
-        left.addWidget(self._status_lbl)
-        top.addLayout(left, 55)
+        gl.setRowStretch(n+2, 1)
+        return _make_dock("Joint Angles", box, "dock_joints", self)
 
-        # Right: 3 planar views
-        right = QVBoxLayout()
-        for title, attr, bg in [
-            ("XY Plane (Front View)", "_xy_label", "#400000"),
-            ("XZ Plane (Top View)",   "_xz_label", "#004000"),
-            ("YZ Plane (Side View)",  "_yz_label", "#000040"),
+    def _build_planes_dock(self) -> QDockWidget:
+        box = QWidget()
+        vl  = QVBoxLayout(box)
+        vl.setContentsMargins(4, 4, 4, 4)
+        vl.setSpacing(4)
+
+        self._xy_label = QLabel(); self._xy_label.setMinimumSize(200, 200)
+        self._xz_label = QLabel(); self._xz_label.setMinimumSize(200, 200)
+        self._yz_label = QLabel(); self._yz_label.setMinimumSize(200, 200)
+
+        for title, lbl, bg in [
+            ("XY — Front View", self._xy_label, "#3a0000"),
+            ("XZ — Top View",   self._xz_label, "#003a00"),
+            ("YZ — Side View",  self._yz_label, "#00003a"),
         ]:
-            right.addWidget(QLabel(title))
-            lbl = QLabel()
-            lbl.setMinimumSize(256, 256)
+            vl.addWidget(QLabel(title))
             lbl.setStyleSheet(f"background:{bg};")
-            right.addWidget(lbl)
-            setattr(self, attr, lbl)
-        top.addLayout(right, 45)
+            lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            vl.addWidget(lbl, 1)
 
-        root.addLayout(top, 10)
+        scroll = _make_scroll(box)
+        return _make_dock("Plane Views", scroll, "dock_planes", self)
 
-        # ---- Bottom: serial panel + calibration panel ----
-        self._serial_panel = SerialPanel(self._bridge, self)
-        root.addWidget(self._serial_panel, 0)
+    # ------------------------------------------------------------------
+    # Layout persistence
+    # ------------------------------------------------------------------
 
-        self._cal_panel = CalibrationPanel(self._bridge, self)
-        root.addWidget(self._cal_panel, 0)
+    def _restore_layout(self):
+        s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        geom  = s.value(_KEY_GEOMETRY)
+        state = s.value(_KEY_STATE)
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(1400, 900)
+        if state:
+            self.restoreState(state)
+
+    def _save_layout(self):
+        s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        s.setValue(_KEY_GEOMETRY, self.saveGeometry())
+        s.setValue(_KEY_STATE,    self.saveState())
+
+    def _reset_layout(self):
+        """Remove saved layout so the next launch uses the default arrangement."""
+        s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        s.remove(_KEY_GEOMETRY)
+        s.remove(_KEY_STATE)
+        # Re-add docks in default positions
+        for dock in (self._dock_joints, self._dock_planes,
+                     self._dock_serial, self._dock_cal):
+            self.removeDockWidget(dock)
+        self.addDockWidget(Qt.RightDockWidgetArea,  self._dock_joints)
+        self.addDockWidget(Qt.RightDockWidgetArea,  self._dock_planes)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self._dock_serial)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self._dock_cal)
+        self.tabifyDockWidget(self._dock_serial, self._dock_cal)
+        self._dock_serial.raise_()
+        self.resize(1400, 900)
+
+    # ------------------------------------------------------------------
+    # Refresh (called by QTimer at 20 Hz)
+    # ------------------------------------------------------------------
 
     def _refresh(self):
         state = self._state
@@ -1119,7 +1252,7 @@ class TeleopWindow(QWidget):
         is_open = state.get("gripper_is_open", True)
         self._gripper_state_lbl.setText("OPEN" if is_open else "CLOSED")
         self._gripper_state_lbl.setStyleSheet(
-            "color:#00ff80;" if is_open else "color:#ff5050;")
+            "color:#00ff80; font-weight:bold;" if is_open else "color:#ff5050; font-weight:bold;")
         self._pitchmode_lbl.setText(state.get("pitchmode", "---"))
 
         err = state.get("error")
@@ -1129,13 +1262,16 @@ class TeleopWindow(QWidget):
             pose  = state.get("pose_ok", False)
             hand  = state.get("hand_ok", False)
             fps   = state.get("fps", 0.0)
-            parts = (["POSE ✓"] if pose else []) + (["HAND ✓"] if hand else [])
+            parts = (["POSE ✓"] if pose else ["POSE ✗"]) + (["HAND ✓"] if hand else ["HAND ✗"])
             parts.append(f"{fps:.1f} fps")
             self._status_lbl.setText("  |  ".join(parts))
 
         self._serial_panel.refresh_status()
 
+    # ------------------------------------------------------------------
+
     def closeEvent(self, event):
+        self._save_layout()
         self._bridge.disconnect(send_disable=True)
         event.accept()
 
