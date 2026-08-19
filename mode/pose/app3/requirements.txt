@@ -1,9 +1,0 @@
-mediapipe>=0.10.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-PySide6>=6.5.0
-pyzmq>=25.0.0
-pyserial>=3.5
-# Optional – only needed for DepthAI OAK-D camera
-# depthai>=2.21.2.0
-# blobconverter>=1.4.1

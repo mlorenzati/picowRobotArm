@@ -1,6 +1,0 @@
-numpy
-opencv-python
-mediapipe
-protobuf
-PySide6
-pyzmq
